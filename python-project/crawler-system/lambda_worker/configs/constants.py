@@ -13,4 +13,5 @@ class APIConfig:
         "",
     )
 
-# cron(0 21,13,15 * * ? *)
+# UTC: cron(0 13,15,21 * * ? *)
+# EventBridge Scheduler timezone = Asia/Tokyo: cron(0 0,6,22 * * ? *)

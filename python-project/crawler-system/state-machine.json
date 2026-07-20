@@ -1,0 +1,47 @@
+{
+  "Comment": "CEO Interview Crawler - Distributed Map Processing",
+  "StartAt": "SplitBatch",
+  "States": {
+    "SplitBatch": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:ap-northeast-1:825765405582:function:vm-ceo-crawler-split",
+        "Payload.$": "$"
+      },
+      "OutputPath": "$.Payload",
+      "Next": "CrawlerMap"
+    },
+    "CrawlerMap": {
+      "Type": "Map",
+      "ItemsPath": "$.batches",
+      "MaxConcurrency": 4,
+      "ItemProcessor": {
+        "StartAt": "Worker",
+        "States": {
+          "Worker": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:ap-northeast-1:825765405582:function:vm-ceo-crawler-worker",
+              "Payload.$": "$"
+            },
+            "OutputPath": "$.Payload",
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

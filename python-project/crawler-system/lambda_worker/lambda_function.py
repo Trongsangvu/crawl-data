@@ -1,12 +1,16 @@
 from main import run_crawl
 
+from utils import log_utils
+
 
 def lambda_handler(event, context):
 
-    batch_id = event["batch_id"]
-
     urls = event["urls"]
 
-    result = run_crawl(batch_id, urls)
+    log_utils.info(f"Worker started with {len(urls)} URLs")
 
-    return {"batch_id": batch_id, "processed": len(urls), "result": result}
+    result = run_crawl(urls)
+
+    log_utils.info(f"Crawl result: {result}")
+
+    return result

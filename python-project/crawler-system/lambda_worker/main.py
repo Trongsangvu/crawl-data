@@ -1,6 +1,5 @@
 """Main entry point for the sacho-osaka crawler."""
 
-import json
 import os
 import re
 import sys
@@ -8,17 +7,13 @@ from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup, Comment, NavigableString
+# from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from utils import log_utils
 from integrations.app_client import save_ceo_interview
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-ARTICLE_URLS_FILE = (
-    "/tmp/article_urls.json"
-    if os.environ.get("AWS_EXECUTION_ENV")
-    else "data/article_urls.json"
-)
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -49,12 +44,6 @@ def parse_date_to_timestamp(date_str: str) -> int | None:
             continue
     log_utils.warning(f"Could not parse date: {date_str!r}")
     return None
-
-
-def load_records(path: str) -> list[dict]:
-    """Load article URL records from a JSON file."""
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 
 def crawl_article(url: str) -> dict | None:
@@ -134,7 +123,11 @@ def crawl_article(url: str) -> dict | None:
                     if text:
                         address_parts.append(text)
 
-            address = "".join(address_parts)
+            address = "".join(address_parts).strip()
+
+            # Remove prefix "本社：" if present
+            if address.startswith("本社："):
+                address = address.removeprefix("本社：").strip()
 
             # Official site
             a_tag = span_tag.find("a", href=True)
@@ -158,42 +151,35 @@ def crawl_article(url: str) -> dict | None:
     }
 
 
-def run_crawl(batch_id: int, urls: list[str]):
-    results = []
+def run_crawl(urls: list[str]) -> dict:
 
-    log_utils.info(f"Batch {batch_id} start " f"({len(urls)} urls)")
+    total = len(urls)
+    success = 0
+    failed = 0
 
     for index, url in enumerate(urls, start=1):
+        log_utils.info(f"[{index}/{total}] Crawling {url}")
+
+        article = crawl_article(url)
+
+        if article is None:
+            failed += 1
+            continue
+
         try:
-            log_utils.info(
-                f"""Batch {batch_id} [{index}/{len(urls)}] Crawling: {url}"""
-            )
-
-            article = crawl_article(url)
-
-            if not article:
-                results.append({"url": url, "status": "skipped"})
-                continue
-
             save_ceo_interview(article)
 
-            results.append({"url": url, "status": "success"})
+            success += 1
+
+            log_utils.info(f"[{index}/{total}] Saved")
 
         except Exception as e:
-            log_utils.error(f"Failed {url}: {e}")
+            failed += 1
+            log_utils.error(f"Failed to run crawl: {e}")
 
-            results.append({"url": url, "status": "failed", "error": str(e)})
-
-    log_utils.info(f"Batch {batch_id} finished")
-
-    return results
+    return {"total": total, "success": success, "failed": failed}
 
 
 # local test
-if __name__ == "__main__":
-
-    test_urls = ["https://shacho.osakazine.net/e793189.html"]
-
-    result = run_crawl(batch_id=1, urls=test_urls)
-
-    print(result)
+# if __name__ == "__main__":
+#     run_crawl()

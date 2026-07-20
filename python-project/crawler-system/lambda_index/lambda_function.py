@@ -9,8 +9,8 @@ from utils.log_utils import crawler
 s3 = boto3.client("s3")
 sfn = boto3.client("stepfunctions")
 
-BUCKET = "vision-match-ceo-crawler"
-KEY = "crawler/article_urls.json"
+BUCKET = os.environ["S3_BUCKET"]
+KEY = os.environ["S3_KEY"]
 
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 
@@ -23,11 +23,13 @@ def lambda_handler(event, context):
 
         crawler(f"Found {len(records)} articles")
 
+        crawler(f"Uploading {len(records)} records to S3...")
+
         # Upload article_urls.json lên S3
         s3.put_object(
             Bucket=BUCKET,
             Key=KEY,
-            Body=json.dumps(records, ensure_ascii=False),
+            Body=json.dumps(records, ensure_ascii=False, indent=2),
             ContentType="application/json",
         )
 

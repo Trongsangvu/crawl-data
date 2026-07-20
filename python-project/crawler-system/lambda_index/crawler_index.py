@@ -1,7 +1,5 @@
 """Crawler that collects all article URLs from shacho.osakazine.net album pages."""
 
-import json
-import os
 import re
 from datetime import datetime
 
@@ -12,7 +10,6 @@ from utils import log_utils
 
 BASE_URL = "https://shacho.osakazine.net"
 START_URL = f"{BASE_URL}/album.html"
-OUTPUT_FILE = "data/article_urls.json"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -23,13 +20,10 @@ USER_AGENT = (
 DATE_PATTERN = re.compile(r"(\d{4}/\d{2}/\d{2})")
 
 
-def crawl_index(output_file: str = OUTPUT_FILE) -> list[str]:
+def crawl_index() -> list[dict]:
     """Collect all article URLs from album pages."""
 
-    if os.environ.get("AWS_EXECUTION_ENV"):
-        output_file = "/tmp/article_urls.json"
-
-    log_utils.crawler(f"crawl_index: starting, output → {output_file}")
+    log_utils.crawler("crawl_index: starting")
 
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
@@ -118,15 +112,11 @@ def crawl_index(output_file: str = OUTPUT_FILE) -> list[str]:
         key=lambda r: r["date"],
     )
 
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    log_utils.crawler(
+        f"crawl_index: collected {len(records)} article(s)"
+    )
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    return records
 
-    log_utils.crawler(f"crawl_index: done — saved {len(records)} URLs to {output_file}")
-
-    return [r["url"] for r in records]
-
-
-if __name__ == "__main__":
-    crawl_index()
+# if __name__ == "__main__":
+#     crawl_index()
