@@ -1,31 +1,3 @@
-// 'use strict';
-
-// /**
-//  * AWS Lambda entry point.
-//  * Converted from lambda_function.py
-//  */
-
-// const { crawlIndex } = require('./crawlerIndex');
-// const { runCrawl } = require('./mainCrawl');
-
-// exports.handler = async (event, context) => {
-//   try {
-//     await crawlIndex();
-//     await runCrawl();
-
-//     return {
-//       statusCode: 200,
-//       body: JSON.stringify({
-//         message: 'Crawler completed successfully',
-//       }),
-//     };
-//   } catch (e) {
-//     console.error(`Error: ${e.message}`);
-//     throw e;
-//   }
-// };
-"use strict";
-
 /**
  * AWS Lambda entry point.
  * Converted from lambda_function.py

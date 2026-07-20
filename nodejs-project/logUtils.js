@@ -1,5 +1,3 @@
-"use strict";
-
 /**
  * Utility helpers for colored console logging.
  * Converted from log_utils.py

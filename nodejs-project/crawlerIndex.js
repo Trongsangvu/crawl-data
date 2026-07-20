@@ -1,5 +1,3 @@
-"use strict";
-
 /**
  * Crawler that collects all article URLs from shacho.osakazine.net album pages.
  * Converted from crawler_index.py (Scrapy -> axios + cheerio, since Scrapy

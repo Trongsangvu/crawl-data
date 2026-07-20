@@ -1,5 +1,3 @@
-"use strict";
-
 /**
  * API client for saving crawled CEO interview data.
  * Converted from app_client.py (pydantic model -> plain JS validation).

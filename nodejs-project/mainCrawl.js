@@ -1,5 +1,3 @@
-"use strict";
-
 /**
  * Main crawl logic for the shacho-osaka crawler.
  * Converted from main.py (requests + BeautifulSoup -> axios + cheerio).
