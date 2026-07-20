@@ -1,0 +1,6 @@
+requests==2.32.5
+beautifulsoup4==4.13.5
+pydantic==2.11.7
+lxml==6.1.0
+scrapy==2.11.2
+Twisted==22.10.0
