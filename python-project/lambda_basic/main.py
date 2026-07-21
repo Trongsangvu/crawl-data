@@ -10,15 +10,11 @@ import requests
 from bs4 import BeautifulSoup, Comment, NavigableString
 
 from utils import log_utils
-from integrations.app_client import save_ceo_interview
+from integrations.app_client import save_ceo_interview, check_existing_urls
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-ARTICLE_URLS_FILE = (
-    "/tmp/article_urls.json"
-    if os.environ.get("AWS_EXECUTION_ENV")
-    else "data/article_urls.json"
-)   
+ARTICLE_URLS_FILE = "/tmp/article_urls.json"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -51,10 +47,17 @@ def parse_date_to_timestamp(date_str: str) -> int | None:
     return None
 
 
-def load_records(path: str) -> list[dict]:
-    """Load article URL records from a JSON file."""
-    with open(path, "r", encoding="utf-8") as f:
+def load_records(records_file: str = ARTICLE_URLS_FILE) -> list[dict]:
+    if not os.path.exists(records_file):
+        return []
+
+    with open(records_file, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def save_records(records_file: str, records: list[dict]) -> None:
+    with open(records_file, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
 
 
 def crawl_article(url: str) -> dict | None:
@@ -123,8 +126,8 @@ def crawl_article(url: str) -> dict | None:
 
         span_tag = h5_tag.find("span")
         if span_tag:
-            # Extract the address by reading text until the first <br>
             address_parts = []
+
             for child in span_tag.children:
                 if getattr(child, "name", None) == "br":
                     break
@@ -135,6 +138,10 @@ def crawl_article(url: str) -> dict | None:
                         address_parts.append(text)
 
             address = "".join(address_parts)
+
+            # Remove 本社:
+            if address.startswith("本社："):
+                address = address[3:].strip()
 
             # Official site
             a_tag = span_tag.find("a", href=True)
@@ -158,27 +165,158 @@ def crawl_article(url: str) -> dict | None:
     }
 
 
-def run_crawl(records_file: str = ARTICLE_URLS_FILE) -> None:
-    """Load records, crawl each not_crawled URL, and save via API."""
+# def run_crawl(records_file: str = ARTICLE_URLS_FILE) -> None:
+#     records = load_records(records_file)
+
+#     pending = [
+#         record
+#         for record in records
+#         if record.get("status") in ("not_crawled", "failed")
+#     ]
+
+#     total = len(pending)
+
+#     log_utils.info(f"{total} URL(s) pending.")
+
+#     if total == 0:
+#         log_utils.info("No pending URLs.")
+#         return
+
+#     success_count = 0
+#     failed_count = 0
+
+#     for index, record in enumerate(pending, start=1):
+
+#         url = record["url"]
+
+#         log_utils.info(
+#             f"[{index}/{total}] Crawling: {url}"
+#         )
+
+#         try:
+#             article = crawl_article(url)
+
+#             if not article:
+#                 record["status"] = "failed"
+
+#                 failed_count += 1
+
+#                 log_utils.warning(
+#                     f"[{index}/{total}] No data: {url}"
+#                 )
+
+#                 continue
+
+#             saved = save_ceo_interview(article)
+
+#             if saved:
+#                 record["status"] = "crawled"
+
+#                 success_count += 1
+
+#                 log_utils.info(
+#                     f"[{index}/{total}] Saved: {url}"
+#                 )
+
+#             else:
+#                 record["status"] = "failed"
+
+#                 failed_count += 1
+
+#                 log_utils.warning(
+#                     f"[{index}/{total}] API save failed: {url}"
+#                 )
+
+#         except Exception as e:
+
+#             record["status"] = "failed"
+
+#             failed_count += 1
+
+#             log_utils.error(
+#                 f"[{index}/{total}] Failed {url}: {e}"
+#             )
+
+#         finally:
+#             # save status after every URL
+#             save_records(records_file, records)
+
+#     log_utils.info(
+#         f"Done. success={success_count}, failed={failed_count}"
+#     )
+
+
+def run_crawl(context=None, records_file: str = ARTICLE_URLS_FILE) -> None:
     records = load_records(records_file)
-    pending = [r for r in records if r.get("status") in ("not_crawled", "failed")]
+    pending = [
+        record
+        for record in records
+        if record.get("status") in ("not_crawled", "failed")
+    ]
+
+    pending_urls = [r["url"] for r in pending]
+    if pending_urls:
+        log_utils.info(f"Checking {len(pending_urls)} URLs with FastAPI...")
+        existing_urls = check_existing_urls(pending_urls)
+
+        if existing_urls:
+            log_utils.info(
+                f"Found {len(existing_urls)} URLs already in database. Skipping..."
+            )
+            for r in records:
+                if r["url"] in existing_urls and r.get("status") != "crawled":
+                    r["status"] = "crawled"
+
+            pending = [r for r in pending if r["url"] not in existing_urls]
+
     total = len(pending)
-    log_utils.info(f"{total} URL(s) pending.")
+    log_utils.info(f"{total} URL(s) pending for actual crawling.")
+
+    if total == 0:
+        log_utils.info("No pending URLs.")
+        save_records(records_file, records)
+        return
+
+    success_count = 0
+    failed_count = 0
 
     for index, record in enumerate(pending, start=1):
+
+        if context and hasattr(context, "get_remaining_time_in_millis"):
+            if context.get_remaining_time_in_millis() < 30000:
+                log_utils.warning(
+                    "Lambda is close to timeout. Stopping early to save state to S3."
+                )
+                break
+
         url = record["url"]
         log_utils.info(f"[{index}/{total}] Crawling: {url}")
 
-        article = crawl_article(url)
-        if not article:
-            log_utils.warning(f"[{index}/{total}] Skipping {url} — no data returned.")
-            continue
+        try:
+            article = crawl_article(url)
 
-        save_ceo_interview(article)
-        log_utils.info(f"[{index}/{total}] Saved: {url}")
+            if not article:
+                record["status"] = "failed"
+                failed_count += 1
+                log_utils.warning(f"[{index}/{total}] No data: {url}")
+                continue
 
-    log_utils.info("Done.")
+            saved = save_ceo_interview(article)
 
+            if saved:
+                record["status"] = "crawled"
+                success_count += 1
+                log_utils.info(f"[{index}/{total}] Saved: {url}")
+            else:
+                record["status"] = "failed"
+                failed_count += 1
+                log_utils.warning(f"[{index}/{total}] API save failed: {url}")
 
-if __name__ == "__main__":
-    run_crawl()
+        except Exception as e:
+            record["status"] = "failed"
+            failed_count += 1
+            log_utils.error(f"[{index}/{total}] Failed {url}: {e}")
+
+    # --- BƯỚC 3: Lưu I/O 1 lần duy nhất ---
+    save_records(records_file, records)
+    log_utils.info(f"Done. success={success_count}, failed={failed_count}")

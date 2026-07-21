@@ -5,6 +5,7 @@ import os
 import re
 from datetime import datetime
 
+import boto3
 import requests
 from bs4 import BeautifulSoup
 
@@ -12,10 +13,22 @@ from utils import log_utils
 
 BASE_URL = "https://shacho.osakazine.net"
 START_URL = f"{BASE_URL}/album.html"
-OUTPUT_FILE = "data/article_urls.json"
+
+# Lambda writable directory
+OUTPUT_FILE = "/tmp/article_urls.json"
+
+# S3 config
+S3_BUCKET = os.environ.get("S3_BUCKET", "vm-ceo-crawler")
+S3_KEY = os.environ.get(
+    "S3_KEY",
+    "crawler/article_urls.json",
+)
+
+s3 = boto3.client("s3")
+
 
 USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "Mozilla/5.0 (Windows NT 10.0; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
@@ -23,19 +36,56 @@ USER_AGENT = (
 DATE_PATTERN = re.compile(r"(\d{4}/\d{2}/\d{2})")
 
 
-def crawl_index(output_file: str = OUTPUT_FILE) -> list[str]:
-    """Collect all article URLs from album pages."""
-    
-    if os.environ.get("AWS_EXECUTION_ENV"):
-        output_file = "/tmp/article_urls.json"
+def load_records(output_file: str) -> list[dict]:
+    if not os.path.exists(output_file):
+        return []
 
-    log_utils.crawler(f"crawl_index: starting, output → {output_file}")
+    with open(output_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_records(output_file: str, records: list[dict]) -> None:
+    directory = os.path.dirname(output_file)
+
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(
+            records,
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+def upload_to_s3(file_path: str):
+    """Upload local file to S3."""
+
+    s3.upload_file(
+        Filename=file_path,
+        Bucket=S3_BUCKET,
+        Key=S3_KEY,
+    )
+
+    log_utils.crawler(f"Uploaded s3://{S3_BUCKET}/{S3_KEY}")
+
+
+def crawl_index(output_file: str = OUTPUT_FILE) -> list[str]:
+    """Collect all article URLs from album pages and upload result to S3."""
+
+    log_utils.crawler("crawl_index: starting")
+
+    existing_records = load_records(output_file)
+
+    existing_urls = {record["url"] for record in existing_records}
 
     session = requests.Session()
+
     session.headers.update({"User-Agent": USER_AGENT})
 
     url = START_URL
-    articles: list[dict] = []
+    new_count = 0
 
     while url:
         log_utils.crawler(f"Crawling: {url}")
@@ -49,11 +99,10 @@ def crawl_index(output_file: str = OUTPUT_FILE) -> list[str]:
 
         soup = BeautifulSoup(response.text, "lxml")
 
-        count_before = len(articles)
+        has_new_on_page = False
 
         for frame in soup.select("div.album div.album_frame"):
             a_tag = frame.select_one("div.album_image a")
-
             if not a_tag:
                 continue
 
@@ -61,35 +110,42 @@ def crawl_index(output_file: str = OUTPUT_FILE) -> list[str]:
             if not href:
                 continue
 
+            article_url = href if href.startswith("http") else f"{BASE_URL}/{href}"
+
+            if article_url in existing_urls:
+                continue
+
+            has_new_on_page = True
+
             title = a_tag.get("title", "")
-
             date_str = ""
-            m = DATE_PATTERN.search(title)
-
-            if m:
+            match = DATE_PATTERN.search(title)
+            if match:
                 try:
-                    date_str = datetime.strptime(
-                        m.group(1),
-                        "%Y/%m/%d",
-                    ).strftime("%Y-%m-%d")
+                    date_str = datetime.strptime(match.group(1), "%Y/%m/%d").strftime(
+                        "%Y-%m-%d"
+                    )
                 except ValueError:
                     pass
 
-            article_url = href if href.startswith("http") else f"{BASE_URL}/{href}"
-
-            articles.append(
+            existing_records.append(
                 {
                     "url": article_url,
                     "date": date_str,
+                    "status": "not_crawled",
+                    "wp_post_id": None,
+                    "wp_post_slug": None,
                 }
             )
 
-        found = len(articles) - count_before
+            existing_urls.add(article_url)
+            new_count += 1
 
-        log_utils.crawler(f"{url}: {found} article(s) found (total {len(articles)})")
+        if not has_new_on_page and len(existing_urls) > 0:
+            log_utils.crawler("Reached already crawled articles. Stopping pagination.")
+            break
 
         next_url = None
-
         for a in soup.select("div.page_nav a"):
             if "次へ" in a.get_text(strip=True):
                 href = a.get("href", "")
@@ -97,36 +153,28 @@ def crawl_index(output_file: str = OUTPUT_FILE) -> list[str]:
                     next_url = href if href.startswith("http") else f"{BASE_URL}/{href}"
                 break
 
-        if next_url:
-            log_utils.crawler(f"following next page: {next_url}")
-        else:
-            log_utils.crawler("no next page — done")
-
         url = next_url
 
-    records = sorted(
-        [
-            {
-                "url": a["url"],
-                "date": a["date"],
-                "status": "not_crawled",
-                "wp_post_id": None,
-                "wp_post_slug": None,
-            }
-            for a in articles
-        ],
+    existing_records.sort(
         key=lambda r: r["date"],
+        reverse=True,
     )
 
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    # Save local Lambda file
+    save_records(
+        output_file,
+        existing_records,
+    )
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    # Upload to S3
+    upload_to_s3(output_file)
 
-    log_utils.crawler(f"crawl_index: done — saved {len(records)} URLs to {output_file}")
+    log_utils.crawler(
+        f"crawl_index: {new_count} new URL(s), {len(existing_records)} total."
+    )
 
-    return [r["url"] for r in records]
+    return [record["url"] for record in existing_records]
 
 
-if __name__ == "__main__":
-    crawl_index()
+# if __name__ == "__main__":
+#     crawl_index()

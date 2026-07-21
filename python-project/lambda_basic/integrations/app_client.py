@@ -8,9 +8,8 @@ from pydantic import BaseModel, AnyHttpUrl
 from utils import log_utils
 from configs.constants import APIConfig
 
-CEO_INTERVIEWS_ENDPOINT = (
-    f"{APIConfig.API_BASE_URL}/api/v1/ceo-interviews/"
-)
+CEO_INTERVIEWS_ENDPOINT = f"{APIConfig.API_BASE_URL}/api/v1/ceo-interviews/"
+CHECK_BULK_ENDPOINT = f"{APIConfig.API_BASE_URL}/api/v1/ceo-interviews/check-bulk"
 
 
 class CeoInterviewCreateRequest(BaseModel):
@@ -23,6 +22,29 @@ class CeoInterviewCreateRequest(BaseModel):
     company_name: Optional[str] = None
     address: Optional[str] = None
     official_site: Optional[str] = None
+
+
+def check_existing_urls(urls: List[str]) -> set:
+    if not urls:
+        return set()
+
+    try:
+        response = requests.post(
+            CHECK_BULK_ENDPOINT,
+            headers={
+                "X-API-KEY": APIConfig.API_KEY,
+            },
+            json={"urls": urls},
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        return set(data.get("existing_urls", []))
+
+    except requests.RequestException as e:
+        log_utils.error(f"Failed to check bulk URLs: {e}")
+        return set()
 
 
 def save_ceo_interview(article: dict) -> bool:
@@ -50,9 +72,7 @@ def save_ceo_interview(article: dict) -> bool:
 
         response.raise_for_status()
 
-        log_utils.info(
-            f"Saved {article['url']} ({response.status_code})"
-        )
+        log_utils.info(f"Saved {article['url']} ({response.status_code})")
 
         return True
 
