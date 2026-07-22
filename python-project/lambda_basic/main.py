@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 
 import requests
+import time
 from bs4 import BeautifulSoup, Comment, NavigableString
 
 from utils import log_utils
@@ -60,11 +61,42 @@ def save_records(records_file: str, records: list[dict]) -> None:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
 
+def get_with_retry(
+    url: str,
+    headers: dict | None = None,
+    retries: int = 3,
+) -> requests.Response:
+    for attempt in range(retries):
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=(10, 60),  # connect: 10s, read: 60s
+            )
+            response.raise_for_status()
+            return response
+
+        except requests.exceptions.RequestException as e:
+            if attempt == retries - 1:
+                raise
+
+            wait = 2**attempt
+            print(
+                f"Request failed ({attempt + 1}/{retries}): {e}. "
+                f"Retrying in {wait}s..."
+            )
+            time.sleep(wait)
+
+    raise RuntimeError("Unreachable")
+
+
 def crawl_article(url: str) -> dict | None:
     """Fetch a single article page and return parsed title + content HTML."""
     try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-        resp.raise_for_status()
+        resp = get_with_retry(
+            url,
+            headers={"User-Agent": USER_AGENT},
+        )
     except requests.RequestException as e:
         log_utils.error(f"Request failed for {url}: {e}")
         return None
@@ -165,87 +197,6 @@ def crawl_article(url: str) -> dict | None:
     }
 
 
-# def run_crawl(records_file: str = ARTICLE_URLS_FILE) -> None:
-#     records = load_records(records_file)
-
-#     pending = [
-#         record
-#         for record in records
-#         if record.get("status") in ("not_crawled", "failed")
-#     ]
-
-#     total = len(pending)
-
-#     log_utils.info(f"{total} URL(s) pending.")
-
-#     if total == 0:
-#         log_utils.info("No pending URLs.")
-#         return
-
-#     success_count = 0
-#     failed_count = 0
-
-#     for index, record in enumerate(pending, start=1):
-
-#         url = record["url"]
-
-#         log_utils.info(
-#             f"[{index}/{total}] Crawling: {url}"
-#         )
-
-#         try:
-#             article = crawl_article(url)
-
-#             if not article:
-#                 record["status"] = "failed"
-
-#                 failed_count += 1
-
-#                 log_utils.warning(
-#                     f"[{index}/{total}] No data: {url}"
-#                 )
-
-#                 continue
-
-#             saved = save_ceo_interview(article)
-
-#             if saved:
-#                 record["status"] = "crawled"
-
-#                 success_count += 1
-
-#                 log_utils.info(
-#                     f"[{index}/{total}] Saved: {url}"
-#                 )
-
-#             else:
-#                 record["status"] = "failed"
-
-#                 failed_count += 1
-
-#                 log_utils.warning(
-#                     f"[{index}/{total}] API save failed: {url}"
-#                 )
-
-#         except Exception as e:
-
-#             record["status"] = "failed"
-
-#             failed_count += 1
-
-#             log_utils.error(
-#                 f"[{index}/{total}] Failed {url}: {e}"
-#             )
-
-#         finally:
-#             # save status after every URL
-#             save_records(records_file, records)
-
-#     log_utils.info(
-#         f"Done. success={success_count}, failed={failed_count}"
-#     )
-
-
 def run_crawl(context=None, records_file: str = ARTICLE_URLS_FILE) -> None:
     records = load_records(records_file)
     pending = [
@@ -257,17 +208,25 @@ def run_crawl(context=None, records_file: str = ARTICLE_URLS_FILE) -> None:
     pending_urls = [r["url"] for r in pending]
     if pending_urls:
         log_utils.info(f"Checking {len(pending_urls)} URLs with FastAPI...")
-        existing_urls = check_existing_urls(pending_urls)
 
-        if existing_urls:
-            log_utils.info(
-                f"Found {len(existing_urls)} URLs already in database. Skipping..."
-            )
-            for r in records:
-                if r["url"] in existing_urls and r.get("status") != "crawled":
+        existing_urls, latest_date = check_existing_urls(pending_urls)
+
+        log_utils.info(f"Latest posted_date in DB: {latest_date}")
+
+        filtered_pending = []
+        for r in records:
+            if r.get("status") in ("not_crawled", "failed"):
+                if r["url"] in existing_urls:
                     r["status"] = "crawled"
+                    continue
 
-            pending = [r for r in pending if r["url"] not in existing_urls]
+                record_date = r.get("date", "")
+                if latest_date and record_date and record_date < latest_date:
+                    continue
+
+                filtered_pending.append(r)
+
+        pending = filtered_pending
 
     total = len(pending)
     log_utils.info(f"{total} URL(s) pending for actual crawling.")
@@ -317,6 +276,6 @@ def run_crawl(context=None, records_file: str = ARTICLE_URLS_FILE) -> None:
             failed_count += 1
             log_utils.error(f"[{index}/{total}] Failed {url}: {e}")
 
-    # --- BƯỚC 3: Lưu I/O 1 lần duy nhất ---
+    # --- save I/O only once ---
     save_records(records_file, records)
     log_utils.info(f"Done. success={success_count}, failed={failed_count}")

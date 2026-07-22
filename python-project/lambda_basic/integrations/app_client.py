@@ -24,27 +24,40 @@ class CeoInterviewCreateRequest(BaseModel):
     official_site: Optional[str] = None
 
 
-def check_existing_urls(urls: List[str]) -> set:
+def check_existing_urls(urls: List[str]) -> tuple[set, Optional[str]]:
     if not urls:
-        return set()
+        return set(), None
 
-    try:
-        response = requests.post(
-            CHECK_BULK_ENDPOINT,
-            headers={
-                "X-API-KEY": APIConfig.API_KEY,
-            },
-            json={"urls": urls},
-            timeout=15,
-        )
-        response.raise_for_status()
-        data = response.json()
+    existing_urls_set = set()
+    latest_date_db = None
+    chunk_size = 500
 
-        return set(data.get("existing_urls", []))
+    for i in range(0, len(urls), chunk_size):
+        chunk = urls[i:i + chunk_size]
+        try:
+            response = requests.post(
+                CHECK_BULK_ENDPOINT,
+                headers={"X-API-KEY": APIConfig.API_KEY},
+                json={"urls": chunk},
+                timeout=15,
+            )
+            response.raise_for_status()
+            res_data = response.json()
 
-    except requests.RequestException as e:
-        log_utils.error(f"Failed to check bulk URLs: {e}")
-        return set()
+            payload = res_data.get("data", res_data)
+
+            # Gather existing urls
+            batch_existing = payload.get("existing_urls", [])
+            existing_urls_set.update(batch_existing)
+
+            # Get lasted_date
+            if payload.get("latest_date"):
+                latest_date_db = payload.get("latest_date")
+
+        except requests.RequestException as e:
+            log_utils.error(f"Failed to check bulk URLs (chunk {i}): {e}")
+
+    return existing_urls_set, latest_date_db
 
 
 def save_ceo_interview(article: dict) -> bool:
